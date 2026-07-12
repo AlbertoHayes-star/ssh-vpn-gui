@@ -18,6 +18,12 @@ PROXY_TABLE = "2023"
 OLD_FORCED_ROUTES = ("0.0.0.0/1", "128.0.0.0/1")
 SINGBOX_PID = STATE_DIR / "sing-box.pid"
 
+OVPN_DEV = "ovpn0"
+OVPN_TABLE = "2124"
+OVPN_CONFIG_PATH = "/etc/ssh-vpn-gui/client.ovpn"
+OVPN_PID_PATH = "/run/ssh-vpn-gui-ovpn.pid"
+OVPN_LOG_PATH = "/var/log/ssh-vpn-gui-ovpn.log"
+
 
 @dataclass
 class CommandRunner:
@@ -172,6 +178,8 @@ def remote_bootstrap_script() -> str:
 set -eu
 changed=0
 
+__SSH_VPN_OVPN_STOP__
+
 if command -v modprobe >/dev/null 2>&1; then
   modprobe tun 2>/dev/null || true
 fi
@@ -216,7 +224,7 @@ sshd -T 2>/dev/null | grep -qi '^permittunnel \\(yes\\|point-to-point\\)' || {
   exit 1
 }
 echo SSH_VPN_BOOTSTRAP_READY
-""".strip()
+""".replace("__SSH_VPN_OVPN_STOP__", _remote_ovpn_stop_snippet()).strip()
 
 
 def remote_setup_script() -> str:
@@ -247,5 +255,92 @@ def remote_cleanup_command() -> str:
     return (
         f"nft delete table ip ssh_vpn_gui 2>/dev/null || true; "
         f"ip addr flush dev {LOCAL_TUN} 2>/dev/null || true; "
-        f"ip link set {LOCAL_TUN} down 2>/dev/null || true"
+        f"ip link set {LOCAL_TUN} down 2>/dev/null || true; "
+        f"{_remote_ovpn_stop_snippet()}"
     )
+
+
+def _remote_ovpn_stop_snippet() -> str:
+    return f"""
+while ip rule del from {TUN_CIDR} table {OVPN_TABLE} priority {OVPN_TABLE} 2>/dev/null; do :; done
+ip route flush table {OVPN_TABLE} 2>/dev/null || true
+if [ -f {OVPN_PID_PATH} ]; then
+  ovpn_pid=$(cat {OVPN_PID_PATH} 2>/dev/null || true)
+  if [ -n "$ovpn_pid" ] && [ -r "/proc/$ovpn_pid/cmdline" ] && \
+     tr '\\0' ' ' < "/proc/$ovpn_pid/cmdline" | grep -Fq "openvpn --config {OVPN_CONFIG_PATH}"; then
+    kill "$ovpn_pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$ovpn_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "$ovpn_pid" 2>/dev/null || true
+  fi
+  rm -f {OVPN_PID_PATH}
+fi
+""".strip()
+
+
+def remote_ovpn_cleanup_command() -> str:
+    return f"""
+set -eu
+{_remote_ovpn_stop_snippet()}
+echo SSH_VPN_OVPN_STOPPED
+""".strip()
+
+
+def remote_ovpn_bootstrap_script(ovpn_b64: str) -> str:
+    return f"""
+set -eu
+if ! command -v openvpn >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y openvpn
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y openvpn
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y openvpn
+  else
+    echo 'no supported package manager found to install openvpn' >&2
+    exit 1
+  fi
+fi
+
+mkdir -p /etc/ssh-vpn-gui
+base64 -d > {OVPN_CONFIG_PATH} <<'SSH_VPN_OVPN_B64'
+{ovpn_b64}
+SSH_VPN_OVPN_B64
+chmod 600 {OVPN_CONFIG_PATH}
+
+{_remote_ovpn_stop_snippet()}
+
+sysctl -w net.ipv4.ip_forward=1 >/dev/null
+sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null 2>&1 || true
+
+openvpn --config {OVPN_CONFIG_PATH} --dev-type tun --dev {OVPN_DEV} --route-noexec --daemon ssh-vpn-gui-ovpn --writepid {OVPN_PID_PATH} --log {OVPN_LOG_PATH}
+
+up=0
+for _ in $(seq 1 90); do
+  if ip -4 addr show {OVPN_DEV} 2>/dev/null | grep -q 'inet '; then
+    up=1
+    break
+  fi
+  if ! {{ [ -f {OVPN_PID_PATH} ] && kill -0 "$(cat {OVPN_PID_PATH})" 2>/dev/null; }}; then
+    echo 'openvpn exited during startup' >&2
+    tail -n 25 {OVPN_LOG_PATH} 2>/dev/null >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+
+if [ "$up" -ne 1 ]; then
+  echo 'openvpn interface did not come up in time' >&2
+  tail -n 25 {OVPN_LOG_PATH} 2>/dev/null >&2 || true
+  exit 1
+fi
+
+sysctl -w net.ipv4.conf.{OVPN_DEV}.rp_filter=0 >/dev/null 2>&1 || true
+ip route replace default dev {OVPN_DEV} table {OVPN_TABLE}
+ip rule add from {TUN_CIDR} table {OVPN_TABLE} priority {OVPN_TABLE}
+echo SSH_VPN_OVPN_READY
+""".strip()

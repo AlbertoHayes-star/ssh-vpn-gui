@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 import subprocess
@@ -12,7 +13,13 @@ from .geosite import update_geosite
 from .paths import SYSTEM_ROUTING_FILE
 from .routing_config import parse_routing_file
 from .routing_engine import RoutingEngine
-from .ssh_tunnel import cleanup_remote, start_tunnel, stop_tunnel
+from .ssh_tunnel import (
+    cleanup_remote,
+    start_remote_ovpn,
+    start_tunnel,
+    stop_remote_ovpn,
+    stop_tunnel,
+)
 from .system import CommandRunner, cleanup_legacy_singbox, cleanup_local_tun, preserve_server_route, require_root, setup_full_tunnel_routes, setup_local_tun
 
 PUBLIC_IP_URLS = (
@@ -63,6 +70,49 @@ def main(argv: list[str] | None = None) -> int:
                 preserve_server_route(runner, args.server)
                 setup_full_tunnel_routes(runner, cleanup_first=False)
             messages.extend(runner.commands)
+        elif args.command == "cascade-on":
+            _require_server(args.server)
+            _require_password(password)
+            ovpn_b64 = _read_ovpn_b64(args.ovpn_file)
+            if ovpn_b64 is None:
+                raise ValueError("--ovpn-file is required")
+            messages.extend(
+                start_remote_ovpn(
+                    args.server,
+                    args.login,
+                    password,
+                    ovpn_b64,
+                    dry_run=args.dry_run,
+                )
+            )
+            if not args.dry_run:
+                current_ip = _curl_public_ip()
+                if not current_ip:
+                    messages.extend(
+                        stop_remote_ovpn(
+                            args.server,
+                            args.login,
+                            password,
+                            dry_run=False,
+                        )
+                    )
+                    fallback_ip = _curl_public_ip()
+                    fallback = f"; SSH fallback public IP: {fallback_ip}" if fallback_ip else ""
+                    raise RuntimeError(f"OpenVPN cascade failed its connectivity check and was stopped{fallback}")
+                messages.append(f"public IP: {current_ip}")
+        elif args.command == "cascade-off":
+            _require_server(args.server)
+            _require_password(password)
+            messages.extend(
+                stop_remote_ovpn(
+                    args.server,
+                    args.login,
+                    password,
+                    dry_run=args.dry_run,
+                )
+            )
+            if not args.dry_run:
+                messages.extend(_health_check())
         elif args.command == "update-geo":
             messages.extend(update_geoip(dry_run=args.dry_run))
             messages.extend(update_geosite(dry_run=args.dry_run))
@@ -83,7 +133,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ssh-vpn-helper")
     parser.add_argument(
         "command",
-        choices=["connect", "disconnect", "routing-on", "routing-off", "update-geo", "diagnose"],
+        choices=[
+            "connect",
+            "disconnect",
+            "routing-on",
+            "routing-off",
+            "cascade-on",
+            "cascade-off",
+            "update-geo",
+            "diagnose",
+        ],
     )
     parser.add_argument("--server", help="Remote server IP address")
     parser.add_argument("--login", default="root", help="Remote SSH login")
@@ -91,6 +150,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--password-stdin", action="store_true", help="Read remote root password from stdin")
     parser.add_argument("--routing-file", default=str(SYSTEM_ROUTING_FILE))
     parser.add_argument("--no-routing", action="store_true", help="Connect SSH TUN without starting routing rules")
+    parser.add_argument("--ovpn-file", help="Path to a .ovpn file to run as a cascaded VPN on the remote server")
     parser.add_argument("--skip-health-check", action="store_true", help="Skip rollback health check after connect")
     parser.add_argument("--dry-run", action="store_true", help="Print commands without changing the system")
     return parser
@@ -119,12 +179,25 @@ def _print_result(*, ok: bool, messages: list[str], error: str | None = None) ->
     print(json.dumps(payload, ensure_ascii=False))
 
 
+def _read_ovpn_b64(ovpn_file: str | None) -> str | None:
+    if not ovpn_file:
+        return None
+    path = Path(ovpn_file)
+    if not path.is_file():
+        raise ValueError(f"OpenVPN config not found: {ovpn_file}")
+    data = path.read_bytes()
+    if not data.strip():
+        raise ValueError(f"OpenVPN config is empty: {ovpn_file}")
+    return base64.b64encode(data).decode("ascii")
+
+
 def _connect(args: argparse.Namespace, config, routing_file: Path, runner: CommandRunner, password: str) -> list[str]:
     messages: list[str] = []
     engine = RoutingEngine(config=config, server=args.server)
+    ovpn_b64 = _read_ovpn_b64(args.ovpn_file)
     try:
         _cleanup_before_connect(args, config, runner)
-        messages.extend(start_tunnel(args.server, args.login, password, dry_run=args.dry_run))
+        messages.extend(start_tunnel(args.server, args.login, password, dry_run=args.dry_run, ovpn_b64=ovpn_b64))
         setup_local_tun(runner)
         preserve_server_route(runner, args.server)
         if not args.no_routing:
@@ -139,7 +212,7 @@ def _connect(args: argparse.Namespace, config, routing_file: Path, runner: Comma
             messages.extend(_health_check())
         return messages
     except Exception as exc:
-        rollback_messages = _rollback_after_failed_connect(args, config)
+        rollback_messages = _rollback_after_failed_connect(args, config, password)
         raise RuntimeError(f"connect failed, rolled back: {exc}; rollback: {' | '.join(rollback_messages)}") from exc
 
 
@@ -152,7 +225,7 @@ def _cleanup_before_connect(args: argparse.Namespace, config, runner: CommandRun
     cleanup_legacy_singbox(runner)
 
 
-def _rollback_after_failed_connect(args: argparse.Namespace, config) -> list[str]:
+def _rollback_after_failed_connect(args: argparse.Namespace, config, password: str) -> list[str]:
     runner = CommandRunner(dry_run=False)
     messages: list[str] = []
     try:
@@ -164,6 +237,11 @@ def _rollback_after_failed_connect(args: argparse.Namespace, config) -> list[str
         messages.extend(runner.commands)
     except Exception as exc:
         messages.append(f"rollback error: {exc}")
+    if args.server:
+        try:
+            messages.extend(cleanup_remote(args.server, args.login, password, dry_run=False))
+        except Exception as exc:
+            messages.append(f"remote rollback error: {exc}")
     return messages
 
 

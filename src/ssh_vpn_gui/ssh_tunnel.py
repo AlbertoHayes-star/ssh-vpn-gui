@@ -10,28 +10,61 @@ import time
 
 import pexpect
 
-from .system import KNOWN_HOSTS, STATE_DIR, ensure_data_dir, remote_bootstrap_script, remote_cleanup_command, remote_setup_script
+from .system import (
+    KNOWN_HOSTS,
+    STATE_DIR,
+    ensure_data_dir,
+    remote_bootstrap_script,
+    remote_cleanup_command,
+    remote_ovpn_bootstrap_script,
+    remote_ovpn_cleanup_command,
+    remote_setup_script,
+)
 
 SSH_PID = STATE_DIR / "ssh.pid"
+OVPN_BOOTSTRAP_TIMEOUT = 240
 
 
 class SshTunnelError(RuntimeError):
     pass
 
 
-def start_tunnel(server: str, login: str, password: str, *, dry_run: bool = False, timeout: int = 30) -> list[str]:
+def start_tunnel(
+    server: str,
+    login: str,
+    password: str,
+    *,
+    dry_run: bool = False,
+    timeout: int = 30,
+    ovpn_b64: str | None = None,
+) -> list[str]:
     bootstrap_command = _ssh_command(server, login, remote_bootstrap_script(), with_tun=False)
     command = _ssh_command(server, login, remote_setup_script())
+    ovpn_command = (
+        _ssh_command(server, login, remote_ovpn_bootstrap_script(ovpn_b64), with_tun=False)
+        if ovpn_b64
+        else None
+    )
     if dry_run:
-        return [
-            " ".join(shlex.quote(part) for part in bootstrap_command),
-            " ".join(shlex.quote(part) for part in command),
-        ]
+        commands = [" ".join(shlex.quote(part) for part in bootstrap_command)]
+        if ovpn_command is not None:
+            commands.append(" ".join(shlex.quote(part) for part in ovpn_command))
+        commands.append(" ".join(shlex.quote(part) for part in command))
+        return commands
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     ensure_data_dir()
     stop_tunnel(dry_run=False)
     messages = _run_password_ssh(bootstrap_command, password, timeout=timeout, success_message="remote bootstrap complete")
+    if ovpn_command is not None:
+        messages.extend(
+            _run_password_ssh(
+                ovpn_command,
+                password,
+                timeout=OVPN_BOOTSTRAP_TIMEOUT,
+                success_message="remote OpenVPN cascade ready",
+            )
+        )
 
     daemon = subprocess.Popen(
         [sys.executable, "-m", "ssh_vpn_gui.tunnel_daemon", server, login],
@@ -63,16 +96,17 @@ def start_tunnel(server: str, login: str, password: str, *, dry_run: bool = Fals
 def stop_tunnel(*, dry_run: bool = False) -> list[str]:
     messages: list[str] = []
     if SSH_PID.exists():
-        pid = int(SSH_PID.read_text(encoding="utf-8").strip())
+        try:
+            pid = int(SSH_PID.read_text(encoding="utf-8").strip())
+        except ValueError:
+            SSH_PID.unlink(missing_ok=True)
+            return messages
         if dry_run:
-            return [f"kill {pid}", "pkill -f ssh_vpn_gui.tunnel_daemon"]
-        _terminate_pid(pid)
+            return [f"verify ssh_vpn_gui.tunnel_daemon pid {pid}", f"kill {pid}"]
+        if _pid_runs_module(pid, "ssh_vpn_gui.tunnel_daemon"):
+            _terminate_pid(pid)
+            messages.append(f"stopped ssh tunnel pid {pid}")
         SSH_PID.unlink(missing_ok=True)
-        messages.append(f"stopped ssh tunnel pid {pid}")
-    if dry_run:
-        messages.append("pkill -f ssh_vpn_gui.tunnel_daemon")
-    else:
-        subprocess.run(["pkill", "-f", "ssh_vpn_gui.tunnel_daemon"], check=False)
     return messages
 
 
@@ -83,6 +117,46 @@ def cleanup_remote(server: str, login: str, password: str, *, dry_run: bool = Fa
 
     ensure_data_dir()
     return _run_password_ssh(command, password, timeout=timeout, success_message="remote cleanup complete")
+
+
+def start_remote_ovpn(
+    server: str,
+    login: str,
+    password: str,
+    ovpn_b64: str,
+    *,
+    dry_run: bool = False,
+) -> list[str]:
+    command = _ssh_command(server, login, remote_ovpn_bootstrap_script(ovpn_b64), with_tun=False)
+    if dry_run:
+        return [" ".join(shlex.quote(part) for part in command)]
+    ensure_data_dir()
+    return _run_password_ssh(
+        command,
+        password,
+        timeout=OVPN_BOOTSTRAP_TIMEOUT,
+        success_message="remote OpenVPN cascade ready",
+    )
+
+
+def stop_remote_ovpn(
+    server: str,
+    login: str,
+    password: str,
+    *,
+    dry_run: bool = False,
+    timeout: int = 30,
+) -> list[str]:
+    command = _ssh_command(server, login, remote_ovpn_cleanup_command(), with_tun=False)
+    if dry_run:
+        return [" ".join(shlex.quote(part) for part in command)]
+    ensure_data_dir()
+    return _run_password_ssh(
+        command,
+        password,
+        timeout=timeout,
+        success_message="remote OpenVPN cascade stopped",
+    )
 
 
 def _run_password_ssh(command: list[str], password: str, *, timeout: int, success_message: str | None = None) -> list[str]:
@@ -138,7 +212,10 @@ def _ssh_command(server: str, login: str, remote_command: str, *, with_tun: bool
     ]
     if with_tun:
         command.extend(["-o", "ExitOnForwardFailure=yes", "-w", "3:3"])
-    command.extend([f"{login}@{server}", "bash", "-lc", remote_command])
+    # OpenSSH joins all arguments after the host into one remote shell command;
+    # argument boundaries are not preserved. Quote the complete script so
+    # bash receives it as the single argument belonging to -c.
+    command.extend([f"{login}@{server}", f"bash -lc {shlex.quote(remote_command)}"])
     return command
 
 
@@ -151,6 +228,15 @@ def _terminate_pid(pid: int) -> None:
             return
         time.sleep(0.1)
     os.kill(pid, 9)
+
+
+def _pid_runs_module(pid: int, module: str) -> bool:
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    encoded_module = module.encode()
+    return b"-m" in argv and encoded_module in argv
 
 
 def _wait_for_daemon_ready(process: subprocess.Popen[str], timeout: int) -> bool:

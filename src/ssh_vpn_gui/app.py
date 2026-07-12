@@ -27,6 +27,9 @@ class SshVpnWindow(Adw.ApplicationWindow):
         super().__init__(application=application, title="SSH VPN")
         self.set_default_size(520, 420)
         self.connected = False
+        self.busy = False
+        self._suppress_toggle = False
+        self._pending_toggle: tuple[str, bool] | None = None
 
         saved_config = load_saved_config()
         server_row, self.server_entry = _entry_row("Remote server IP address")
@@ -38,11 +41,31 @@ class SshVpnWindow(Adw.ApplicationWindow):
 
         self.routing_switch = Gtk.CheckButton()
         self.routing_switch.set_valign(Gtk.Align.CENTER)
-        self.routing_switch.set_active(True)
+        self.routing_switch.set_active(bool(saved_config.get("routing", True)))
         self.routing_switch.connect("toggled", self._on_routing_toggled)
         routing_row = Adw.ActionRow(title="Routing rules", subtitle="Checked: use routing.cfg. Unchecked: send all traffic through tunnel.")
         routing_row.add_suffix(self.routing_switch)
         routing_row.set_activatable_widget(self.routing_switch)
+
+        self.ovpn_path = saved_config.get("ovpn_path", "")
+        self._ovpn_dialog = None
+        self.cascade_switch = Gtk.CheckButton()
+        self.cascade_switch.set_valign(Gtk.Align.CENTER)
+        self.cascade_switch.set_active(bool(saved_config.get("cascade", False)))
+        self.cascade_switch.connect("toggled", self._on_cascade_toggled)
+        cascade_row = Adw.ActionRow(
+            title="Use .ovpn file on remote server",
+            subtitle="Run the chosen OpenVPN config on the server and route tunnel traffic through it (cascaded VPN).",
+        )
+        cascade_row.add_suffix(self.cascade_switch)
+        cascade_row.set_activatable_widget(self.cascade_switch)
+
+        self.ovpn_button = Gtk.Button(label="Choose .ovpn file")
+        self.ovpn_button.set_valign(Gtk.Align.CENTER)
+        self.ovpn_button.connect("clicked", self._on_choose_ovpn_clicked)
+        self.ovpn_row = Adw.ActionRow(title="OpenVPN config")
+        self.ovpn_row.add_suffix(self.ovpn_button)
+        self._update_ovpn_subtitle()
 
         self.connect_button = Gtk.Button(label="Connect")
         self.connect_button.add_css_class("suggested-action")
@@ -66,13 +89,28 @@ class SshVpnWindow(Adw.ApplicationWindow):
         self.status = Gtk.Label(label="Ready")
         self.status.set_wrap(True)
         self.status.set_xalign(0)
+        self.status.set_yalign(0)
+        self.status.set_selectable(True)
+        self.status.set_margin_top(8)
+        self.status.set_margin_bottom(8)
+        self.status.set_margin_start(8)
+        self.status.set_margin_end(8)
         self.status.add_css_class("dim-label")
+
+        self.status_scroller = Gtk.ScrolledWindow()
+        self.status_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.status_scroller.set_size_request(-1, 120)
+        self.status_scroller.set_vexpand(True)
+        self.status_scroller.add_css_class("card")
+        self.status_scroller.set_child(self.status)
 
         group = Adw.PreferencesGroup(title="Connection")
         group.add(server_row)
         group.add(login_row)
         group.add(password_row)
         group.add(routing_row)
+        group.add(cascade_row)
+        group.add(self.ovpn_row)
 
         content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         content.set_margin_top(24)
@@ -84,13 +122,14 @@ class SshVpnWindow(Adw.ApplicationWindow):
         content.append(self.update_geo_button)
         content.append(self.diagnose_button)
         content.append(Gtk.Separator())
-        content.append(self.status)
+        content.append(self.status_scroller)
 
         header = Adw.HeaderBar()
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         root.append(header)
         root.append(content)
         self.set_content(root)
+        self._set_busy(False)
 
     def _on_connect_clicked(self, _button: Gtk.Button) -> None:
         server = self.server_entry.get_text().strip()
@@ -100,11 +139,21 @@ class SshVpnWindow(Adw.ApplicationWindow):
             self._set_status("Enter remote server IP address, login, and password.")
             return
 
-        save_config(server=server, login=login, password=password)
+        cascade = self.cascade_switch.get_active()
+        if cascade and not self.ovpn_path:
+            self._set_status("Choose a .ovpn file or turn off the cascaded VPN option.")
+            return
+
+        self._save_config()
         args = ["connect", "--server", server, "--login", login]
         if not self.routing_switch.get_active():
             args.append("--no-routing")
-        self._run_helper(args, password=password, busy_text="Connecting...")
+        if cascade:
+            args.extend(["--ovpn-file", self.ovpn_path])
+            busy_text = "Connecting (preparing OpenVPN cascade; first setup may take a minute)..."
+        else:
+            busy_text = "Connecting..."
+        self._run_helper(args, password=password, busy_text=busy_text)
 
     def _on_disconnect_clicked(self, _button: Gtk.Button) -> None:
         args = ["disconnect"]
@@ -112,7 +161,7 @@ class SshVpnWindow(Adw.ApplicationWindow):
         login = self.login_entry.get_text().strip()
         password = self.password_entry.get_text()
         if server and login and password:
-            save_config(server=server, login=login, password=password)
+            self._save_config()
             args.extend(["--server", server, "--login", login])
         self._run_helper(args, password=password, busy_text="Disconnecting...")
 
@@ -127,14 +176,116 @@ class SshVpnWindow(Adw.ApplicationWindow):
         self._run_helper(args, password=None, busy_text="Running diagnostics...")
 
     def _on_routing_toggled(self, _button: Gtk.CheckButton) -> None:
+        if self._suppress_toggle:
+            return
+        state = self.routing_switch.get_active()
         if not self.connected:
+            self._save_config()
             return
         server = self.server_entry.get_text().strip()
-        state = self.routing_switch.get_active()
         args = ["routing-on" if state else "routing-off"]
         if server:
             args.extend(["--server", server])
+        self._pending_toggle = ("routing", not state)
         self._run_helper(args, password=None, busy_text="Updating routing...")
+
+    def _on_cascade_toggled(self, _button: Gtk.CheckButton) -> None:
+        self.ovpn_row.set_sensitive(not self.busy)
+        if self._suppress_toggle:
+            return
+
+        enabled = self.cascade_switch.get_active()
+        if enabled and not Path(self.ovpn_path).is_file():
+            self._set_switch_active(self.cascade_switch, False)
+            self._set_status("Choose a .ovpn file to use the cascaded VPN.")
+            self._save_config()
+            return
+
+        if not self.connected:
+            self._save_config()
+            return
+
+        self._apply_cascade(enabled)
+
+    def _on_choose_ovpn_clicked(self, _button: Gtk.Button) -> None:
+        dialog = Gtk.FileChooserNative(
+            title="Select an OpenVPN configuration",
+            transient_for=self,
+            action=Gtk.FileChooserAction.OPEN,
+            accept_label="_Open",
+            cancel_label="_Cancel",
+        )
+        ovpn_filter = Gtk.FileFilter()
+        ovpn_filter.set_name("OpenVPN config (*.ovpn, *.conf)")
+        ovpn_filter.add_pattern("*.ovpn")
+        ovpn_filter.add_pattern("*.conf")
+        dialog.add_filter(ovpn_filter)
+        dialog.connect("response", self._on_ovpn_dialog_response)
+        self._ovpn_dialog = dialog
+        dialog.show()
+
+    def _on_ovpn_dialog_response(self, dialog: Gtk.FileChooserNative, response: int) -> None:
+        if response == Gtk.ResponseType.ACCEPT:
+            selected = dialog.get_file()
+            if selected is not None:
+                self.ovpn_path = selected.get_path() or ""
+                self._update_ovpn_subtitle()
+                self._save_config()
+                if self.connected and self.cascade_switch.get_active():
+                    self._apply_cascade(True, replacing=True)
+        self._ovpn_dialog = None
+
+    def _update_ovpn_subtitle(self) -> None:
+        if self.ovpn_path:
+            self.ovpn_row.set_subtitle(Path(self.ovpn_path).name)
+        else:
+            self.ovpn_row.set_subtitle("No file selected")
+        self.ovpn_row.set_sensitive(not self.busy)
+
+    def _save_config(self) -> None:
+        save_config(
+            server=self.server_entry.get_text().strip(),
+            login=self.login_entry.get_text().strip(),
+            password=self.password_entry.get_text(),
+            routing=self.routing_switch.get_active(),
+            cascade=self.cascade_switch.get_active(),
+            ovpn_path=self.ovpn_path,
+        )
+
+    def _apply_cascade(self, enabled: bool, *, replacing: bool = False) -> None:
+        server = self.server_entry.get_text().strip()
+        login = self.login_entry.get_text().strip()
+        password = self.password_entry.get_text()
+        if not server or not login or not password:
+            self._set_switch_active(self.cascade_switch, not enabled)
+            self._set_status("Remote server, login, and password are required.")
+            return
+
+        args = ["cascade-on" if enabled else "cascade-off", "--server", server, "--login", login]
+        if enabled:
+            if not Path(self.ovpn_path).is_file():
+                self._set_switch_active(self.cascade_switch, False)
+                self._set_status("The selected .ovpn file no longer exists.")
+                self._save_config()
+                return
+            args.extend(["--ovpn-file", self.ovpn_path])
+
+        self._pending_toggle = ("cascade", False if replacing else not enabled)
+        if replacing:
+            busy_text = "Replacing the remote OpenVPN configuration..."
+        elif enabled:
+            busy_text = "Starting OpenVPN cascade on the remote server..."
+        else:
+            busy_text = "Stopping OpenVPN cascade on the remote server..."
+        self._run_helper(args, password=password, busy_text=busy_text)
+
+    def _set_switch_active(self, switch: Gtk.CheckButton, active: bool) -> None:
+        self._suppress_toggle = True
+        try:
+            switch.set_active(active)
+        finally:
+            self._suppress_toggle = False
+        self.ovpn_row.set_sensitive(not self.busy)
 
     def _run_helper(self, args: list[str], *, password: str | None, busy_text: str) -> None:
         self._set_busy(True)
@@ -147,32 +298,58 @@ class SshVpnWindow(Adw.ApplicationWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_helper_result(self, command: str, result: dict) -> bool:
-        self._set_busy(False)
         if result.get("ok"):
             if command == "connect":
                 self.connected = True
             elif command == "disconnect":
                 self.connected = False
-            self._sync_buttons()
+            if command in {"routing-on", "routing-off", "cascade-on", "cascade-off"}:
+                self._save_config()
+            self._pending_toggle = None
             messages = result.get("messages") or []
             self._set_status("Done." if not messages else "\n".join(messages[-5:]))
         else:
+            if self._pending_toggle is not None:
+                name, previous_state = self._pending_toggle
+                switch = self.routing_switch if name == "routing" else self.cascade_switch
+                self._set_switch_active(switch, previous_state)
+                self._pending_toggle = None
+                self._save_config()
             self._set_status(result.get("error", "Unknown helper error"))
+        self._set_busy(False)
         return False
 
     def _set_busy(self, busy: bool) -> None:
-        self.connect_button.set_sensitive(not busy and not self.connected)
-        self.disconnect_button.set_sensitive(not busy and self.connected)
-        self.update_geo_button.set_sensitive(not busy)
-        self.diagnose_button.set_sensitive(not busy)
-        self.routing_switch.set_sensitive(not busy)
-
-    def _sync_buttons(self) -> None:
-        self.connect_button.set_sensitive(not self.connected)
-        self.disconnect_button.set_sensitive(self.connected)
+        self.busy = busy
+        available = not busy
+        self.connect_button.set_sensitive(available and not self.connected)
+        self.disconnect_button.set_sensitive(available and self.connected)
+        if self.connected:
+            self.connect_button.set_label("Connected")
+            self.connect_button.remove_css_class("suggested-action")
+            self.disconnect_button.add_css_class("destructive-action")
+        else:
+            self.connect_button.set_label("Connect")
+            self.connect_button.add_css_class("suggested-action")
+            self.disconnect_button.remove_css_class("destructive-action")
+        self.update_geo_button.set_sensitive(available)
+        self.diagnose_button.set_sensitive(available)
+        self.routing_switch.set_sensitive(available)
+        self.cascade_switch.set_sensitive(available)
+        self.ovpn_row.set_sensitive(available)
+        credentials_editable = available and not self.connected
+        self.server_entry.set_sensitive(credentials_editable)
+        self.login_entry.set_sensitive(credentials_editable)
+        self.password_entry.set_sensitive(credentials_editable)
 
     def _set_status(self, text: str) -> None:
         self.status.set_text(text)
+        GLib.idle_add(self._scroll_status_to_bottom)
+
+    def _scroll_status_to_bottom(self) -> bool:
+        adjustment = self.status_scroller.get_vadjustment()
+        adjustment.set_value(max(0, adjustment.get_upper() - adjustment.get_page_size()))
+        return False
 
 
 def run_helper(args: list[str], *, password: str | None) -> dict:
@@ -216,6 +393,8 @@ def _helper_timeout(args: list[str]) -> int:
         return 180
     if command == "diagnose":
         return 30
+    if command == "cascade-on" or (command == "connect" and "--ovpn-file" in args):
+        return 360
     return 90
 
 
@@ -233,19 +412,45 @@ def _entry_row(title: str, *, password: bool = False) -> tuple[Adw.ActionRow, Gt
     return row, entry
 
 
-def load_saved_config() -> dict[str, str]:
+def load_saved_config() -> dict:
     try:
         with CONFIG_FILE.open("r", encoding="utf-8") as file:
             data = json.load(file)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
-    return {key: str(value) for key, value in data.items() if key in {"server", "login", "password"}}
+    result: dict = {}
+    for key in ("server", "login", "password", "ovpn_path"):
+        if key in data:
+            result[key] = str(data[key])
+    for key in ("routing", "cascade"):
+        if key in data:
+            result[key] = bool(data[key])
+    return result
 
 
-def save_config(*, server: str, login: str, password: str) -> None:
+def save_config(
+    *,
+    server: str,
+    login: str,
+    password: str,
+    routing: bool = True,
+    cascade: bool = False,
+    ovpn_path: str = "",
+) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(
-        json.dumps({"server": server, "login": login, "password": password}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "server": server,
+                "login": login,
+                "password": password,
+                "routing": routing,
+                "cascade": cascade,
+                "ovpn_path": ovpn_path,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     CONFIG_FILE.chmod(0o600)

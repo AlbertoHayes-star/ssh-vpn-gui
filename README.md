@@ -11,6 +11,8 @@ classifier.
 - Password-based root login to the remote server.
 - Automatic remote-server bootstrap before the tunnel starts.
 - Full-tunnel and rule-based routing modes.
+- Optional cascaded VPN through a user-supplied `.ovpn` file running on the
+  remote server.
 - GeoIP and Geosite routing data updates from the GUI.
 - Automatic rollback when a connection attempt fails.
 
@@ -124,6 +126,58 @@ DNS. After changing the file, disconnect and reconnect.
 
 - IP66 GeoIP MMDB to `/var/lib/ssh-vpn-gui/ip66.mmdb`
 - v2fly domain-list-community data to `/var/lib/ssh-vpn-gui/geosite`
+
+## Cascaded VPN with an .ovpn File
+
+Enable **Use .ovpn file on remote server** and choose an OpenVPN client
+configuration to chain a second VPN behind the SSH tunnel:
+
+```text
+your computer -> SSH TUN -> remote server -> OpenVPN provider -> Internet
+```
+
+During connect the application, using the root credentials:
+
+1. Installs OpenVPN on the remote server when it is missing (apt, dnf or
+   yum).
+2. Uploads the selected file to `/etc/ssh-vpn-gui/client.ovpn` (mode `0600`).
+3. Starts the OpenVPN client with the interface `ovpn0` and waits for it to
+   come up. The client log is written to `/var/log/ssh-vpn-gui-ovpn.log` on
+   the server.
+4. Adds a policy-routing rule on the server so that only traffic arriving
+   from the SSH tunnel is sent through `ovpn0`. The server's own default
+   route and the SSH connection are not affected.
+
+Traffic that your routing rules classify as `proxy` therefore exits through
+the OpenVPN provider, while `direct` traffic keeps using your local network.
+Disconnecting stops the remote OpenVPN client and removes the extra routing.
+
+Both routing checkboxes are live while connected:
+
+- Clearing **Use .ovpn file on remote server** immediately removes the remote
+  policy route and stops the managed OpenVPN client. Selecting it starts the
+  cascade without rebuilding the SSH tunnel.
+- Changing **Routing rules** immediately switches between `routing.cfg` and
+  full-tunnel mode.
+- While disconnected, checkbox changes are saved as preferences for the next
+  connection. If a live change fails, the checkbox returns to its previous
+  state instead of showing a state that was not applied.
+- Choosing another `.ovpn` file while the cascade is active restarts the
+  remote client with that file.
+
+Changing the cascade changes the public exit IP. Existing TCP, browser and
+WebSocket sessions can disconnect and must reconnect; new connections should
+work immediately. The application checks this after enabling the cascade and
+shows the new public IP. If the check fails, it stops OpenVPN automatically
+and restores the SSH-only route.
+
+Notes:
+
+- The `.ovpn` file must be self-contained (inline certificates and keys).
+  Configurations that require an interactive username and password
+  (`auth-user-pass` without a credentials file) will fail to start; embed
+  `auth-user-pass` credentials in the file if your provider needs them.
+- The first cascaded connect can take a minute while OpenVPN is installed.
 
 ## Local Privilege Prompt
 

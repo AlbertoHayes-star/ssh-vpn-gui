@@ -43,23 +43,32 @@ def start_dns_proxy(routing_file: Path, *, dry_run: bool = False) -> list[str]:
 def stop_dns_proxy(*, dry_run: bool = False) -> list[str]:
     messages: list[str] = []
     if not DNS_PID.exists():
-        if dry_run:
-            return ["pkill -f ssh_vpn_gui.dns_proxy"]
-        subprocess.run(["pkill", "-f", "ssh_vpn_gui.dns_proxy"], check=False)
         return []
 
-    pid = int(DNS_PID.read_text(encoding="utf-8").strip())
-    if dry_run:
-        return [f"kill {pid}", "pkill -f ssh_vpn_gui.dns_proxy"]
     try:
-        os.kill(pid, signal.SIGTERM)
-        messages.append(f"stopped DNS classifier pid {pid}")
-    except ProcessLookupError:
-        pass
+        pid = int(DNS_PID.read_text(encoding="utf-8").strip())
+    except ValueError:
+        DNS_PID.unlink(missing_ok=True)
+        return messages
+    if dry_run:
+        return [f"verify ssh_vpn_gui.dns_proxy pid {pid}", f"kill {pid}"]
+    if _pid_runs_dns_proxy(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            messages.append(f"stopped DNS classifier pid {pid}")
+        except ProcessLookupError:
+            pass
     DNS_PID.unlink(missing_ok=True)
-    subprocess.run(["pkill", "-f", "ssh_vpn_gui.dns_proxy"], check=False)
     _wait_until_port_free()
     return messages
+
+
+def _pid_runs_dns_proxy(pid: int) -> bool:
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return b"-m" in argv and b"ssh_vpn_gui.dns_proxy" in argv
 
 
 def diagnose_dns_proxy() -> list[str]:

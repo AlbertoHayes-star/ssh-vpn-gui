@@ -1,3 +1,51 @@
+ssh-vpn-gui (0.2.4) unstable; urgency=medium
+
+  * Clarify the connection status: OpenVPN is prepared on every cascaded
+    connection but installed only during the first setup when missing.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 22:20:00 +0300
+
+ssh-vpn-gui (0.2.3) unstable; urgency=medium
+
+  * Put status and diagnostic text in a fixed-height scrollable area.
+  * Show Connected after a successful connection and emphasize the active
+    Disconnect button.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 22:15:00 +0300
+
+ssh-vpn-gui (0.2.2) unstable; urgency=medium
+
+  * Verify Internet connectivity and report the new public IP after live
+    OpenVPN switching.
+  * Automatically stop the cascade and restore SSH-only routing when enabling
+    OpenVPN fails its connectivity check.
+  * Replace broad process-name cleanup with validated PID ownership checks.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 22:05:00 +0300
+
+ssh-vpn-gui (0.2.1) unstable; urgency=medium
+
+  * Apply OpenVPN and routing checkbox changes immediately while connected.
+  * Roll a checkbox back in the GUI when its live operation fails.
+  * Stop stale remote OpenVPN state on every new connection and during failed
+    connection rollback.
+  * Quote multiline remote scripts correctly for bash -lc and validate managed
+    OpenVPN PIDs before terminating them.
+  * Lock server credentials while connected and persist both checkbox choices.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 21:45:00 +0300
+
+ssh-vpn-gui (0.2.0) unstable; urgency=medium
+
+  * Add a cascaded VPN option: the new "Use .ovpn file on remote server"
+    checkbox uploads a user-selected OpenVPN configuration to the server,
+    installs OpenVPN there when missing, starts the client, and policy-routes
+    tunnel traffic through the OpenVPN interface.
+  * Add --ovpn-file to ssh-vpn-helper connect and stop the remote OpenVPN
+    client with its routing during disconnect cleanup.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 21:20:00 +0300
+
 ssh-vpn-gui (0.1.9) unstable; urgency=medium
 
   * Install the application icon in the hicolor 512x512 directory supported
