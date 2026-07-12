@@ -1,3 +1,33 @@
+ssh-vpn-gui (0.2.8) unstable; urgency=medium
+
+  * Install conntrack tools with the remote OpenVPN client when missing.
+  * Clear stale tunnel-client conntrack entries when switching cascade egress,
+    preventing browsers from reusing dead OpenVPN NAT mappings.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 23:05:00 +0300
+
+ssh-vpn-gui (0.2.7) unstable; urgency=medium
+
+  * Replace the unreliable desktop application menu entry with a visible
+    Edit Routing Rules button beside Update Routing Data.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 22:50:00 +0300
+
+ssh-vpn-gui (0.2.6) unstable; urgency=medium
+
+  * Export Edit Routing Rules through the global GTK application menu as well
+    as the in-window menu button.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 22:40:00 +0300
+
+ssh-vpn-gui (0.2.5) unstable; urgency=medium
+
+  * Add an application menu with Edit Routing Rules and Quit actions.
+  * Add a built-in scrollable routing.cfg editor with validation, privileged
+    atomic saving, and live rule application while connected.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 22:30:00 +0300
+
 ssh-vpn-gui (0.2.4) unstable; urgency=medium
 
   * Clarify the connection status: OpenVPN is prepared on every cascaded

@@ -61,6 +61,7 @@ def test_start_tunnel_dry_run_bootstraps_before_tun() -> None:
     assert "-w 3:3" not in commands[0]
     assert "PermitTunnel point-to-point" in commands[0]
     assert "ip rule del from 10.255.3.0/30 table 2124" in commands[0]
+    assert "conntrack -D -s 10.255.3.0/30" in commands[0]
     assert "-w 3:3" in commands[1]
 
 
@@ -80,6 +81,7 @@ def test_start_tunnel_dry_run_inserts_ovpn_bootstrap_before_tun() -> None:
     assert len(commands) == 3
     assert "PermitTunnel point-to-point" in commands[0]
     assert "openvpn --config" in commands[1]
+    assert "apt-get install -y openvpn conntrack" in commands[1]
     assert "-w 3:3" not in commands[1]
     assert "-w 3:3" in commands[2]
 
@@ -116,5 +118,6 @@ def test_stop_remote_ovpn_only_removes_cascade_state() -> None:
     assert len(commands) == 1
     assert "ip rule del from 10.255.3.0/30 table 2124" in commands[0]
     assert "ip route flush table 2124" in commands[0]
+    assert "conntrack -D -s 10.255.3.0/30" in commands[0]
     assert "ip addr flush dev tun3" not in commands[0]
     assert "-w 3:3" not in commands[0]

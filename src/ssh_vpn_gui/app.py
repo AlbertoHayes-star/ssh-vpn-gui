@@ -22,6 +22,83 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / 
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
+class RoutingEditorWindow(Gtk.Window):
+    def __init__(self, parent: "SshVpnWindow") -> None:
+        super().__init__(title="Edit Routing Rules", transient_for=parent, modal=True)
+        self.parent_window = parent
+        self.set_default_size(720, 520)
+
+        cancel_button = Gtk.Button(label="Cancel")
+        cancel_button.connect("clicked", lambda _button: self.close())
+        self.save_button = Gtk.Button(label="Save")
+        self.save_button.add_css_class("suggested-action")
+        self.save_button.connect("clicked", self._on_save_clicked)
+
+        header = Gtk.HeaderBar()
+        header.pack_start(cancel_button)
+        header.pack_end(self.save_button)
+        self.set_titlebar(header)
+
+        self.text_view = Gtk.TextView()
+        self.text_view.set_monospace(True)
+        self.text_view.set_wrap_mode(Gtk.WrapMode.NONE)
+        self.text_view.set_top_margin(12)
+        self.text_view.set_bottom_margin(12)
+        self.text_view.set_left_margin(12)
+        self.text_view.set_right_margin(12)
+
+        self.message = Gtk.Label()
+        self.message.set_xalign(0)
+        self.message.set_wrap(True)
+        self.message.add_css_class("dim-label")
+
+        scroller = Gtk.ScrolledWindow()
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_vexpand(True)
+        scroller.set_hexpand(True)
+        scroller.set_child(self.text_view)
+
+        content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        content.set_margin_top(12)
+        content.set_margin_bottom(12)
+        content.set_margin_start(12)
+        content.set_margin_end(12)
+        content.append(scroller)
+        content.append(self.message)
+        self.set_child(content)
+
+        try:
+            text = SYSTEM_ROUTING_FILE.read_text(encoding="utf-8")
+        except OSError as exc:
+            text = ""
+            self.message.set_text(f"Unable to read routing rules: {exc}")
+            self.save_button.set_sensitive(False)
+        self.text_view.get_buffer().set_text(text)
+
+    def _on_save_clicked(self, _button: Gtk.Button) -> None:
+        buffer = self.text_view.get_buffer()
+        content = buffer.get_text(buffer.get_start_iter(), buffer.get_end_iter(), True)
+        self.save_button.set_sensitive(False)
+        self.text_view.set_editable(False)
+        self.message.set_text("Validating and saving routing rules...")
+
+        def worker() -> None:
+            result = run_helper(["save-routing"], password=None, content=content)
+            GLib.idle_add(self._handle_save_result, result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _handle_save_result(self, result: dict) -> bool:
+        if result.get("ok"):
+            self.close()
+            self.parent_window._on_routing_rules_saved()
+        else:
+            self.message.set_text(result.get("error", "Unable to save routing rules"))
+            self.save_button.set_sensitive(True)
+            self.text_view.set_editable(True)
+        return False
+
+
 class SshVpnWindow(Adw.ApplicationWindow):
     def __init__(self, application: Adw.Application) -> None:
         super().__init__(application=application, title="SSH VPN")
@@ -78,6 +155,13 @@ class SshVpnWindow(Adw.ApplicationWindow):
         self.update_geo_button = Gtk.Button(label="Update Routing Data")
         self.update_geo_button.connect("clicked", self._on_update_geo_clicked)
 
+        self.edit_routing_button = Gtk.Button(label="Edit Routing Rules")
+        self.edit_routing_button.connect("clicked", lambda _button: self.open_routing_editor())
+
+        routing_button_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        routing_button_box.append(self.update_geo_button)
+        routing_button_box.append(self.edit_routing_button)
+
         self.diagnose_button = Gtk.Button(label="Diagnose")
         self.diagnose_button.connect("clicked", self._on_diagnose_clicked)
 
@@ -119,7 +203,7 @@ class SshVpnWindow(Adw.ApplicationWindow):
         content.set_margin_end(24)
         content.append(group)
         content.append(button_box)
-        content.append(self.update_geo_button)
+        content.append(routing_button_box)
         content.append(self.diagnose_button)
         content.append(Gtk.Separator())
         content.append(self.status_scroller)
@@ -130,6 +214,17 @@ class SshVpnWindow(Adw.ApplicationWindow):
         root.append(content)
         self.set_content(root)
         self._set_busy(False)
+
+    def open_routing_editor(self) -> None:
+        RoutingEditorWindow(self).present()
+
+    def _on_routing_rules_saved(self) -> None:
+        if self.connected and self.routing_switch.get_active() and not self.busy:
+            server = self.server_entry.get_text().strip()
+            args = ["routing-on", "--server", server]
+            self._run_helper(args, password=None, busy_text="Applying updated routing rules...")
+        else:
+            self._set_status("Routing rules saved. They will be used on the next connection.")
 
     def _on_connect_clicked(self, _button: Gtk.Button) -> None:
         server = self.server_entry.get_text().strip()
@@ -333,6 +428,7 @@ class SshVpnWindow(Adw.ApplicationWindow):
             self.connect_button.add_css_class("suggested-action")
             self.disconnect_button.remove_css_class("destructive-action")
         self.update_geo_button.set_sensitive(available)
+        self.edit_routing_button.set_sensitive(available)
         self.diagnose_button.set_sensitive(available)
         self.routing_switch.set_sensitive(available)
         self.cascade_switch.set_sensitive(available)
@@ -352,12 +448,17 @@ class SshVpnWindow(Adw.ApplicationWindow):
         return False
 
 
-def run_helper(args: list[str], *, password: str | None) -> dict:
+def run_helper(args: list[str], *, password: str | None, content: str | None = None) -> dict:
     command = [*_privileged_helper_command(), *args, "--routing-file", str(SYSTEM_ROUTING_FILE)]
     input_text = None
+    if password and content is not None:
+        return {"ok": False, "error": "Cannot send a password and routing content together"}
     if password:
         command.append("--password-stdin")
         input_text = password
+    elif content is not None:
+        command.append("--content-stdin")
+        input_text = content
 
     try:
         completed = subprocess.run(

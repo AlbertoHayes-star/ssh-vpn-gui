@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 
@@ -113,3 +114,54 @@ def test_cascade_on_rolls_back_when_connectivity_check_fails(
     assert stopped == [True]
     assert "was stopped" in payload["error"]
     assert "198.51.100.10" in payload["error"]
+
+
+def test_save_routing_validates_and_atomically_replaces_file(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    routing_file = tmp_path / "routing.cfg"
+    routing_file.write_text("default: proxy\n", encoding="utf-8")
+    updated = "default: direct\ndomain(domain:example.com)->proxy\n"
+    monkeypatch.setattr(helper, "require_root", lambda: None)
+    monkeypatch.setattr(helper.sys, "stdin", io.StringIO(updated))
+
+    result = helper.main(
+        [
+            "save-routing",
+            "--content-stdin",
+            "--routing-file",
+            str(routing_file),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 0
+    assert payload["ok"] is True
+    assert routing_file.read_text(encoding="utf-8") == updated
+    assert routing_file.stat().st_mode & 0o777 == 0o644
+    assert not (tmp_path / ".routing.cfg.tmp").exists()
+
+
+def test_save_routing_rejects_invalid_rules_without_overwriting(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    routing_file = tmp_path / "routing.cfg"
+    original = "default: proxy\n"
+    routing_file.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(helper, "require_root", lambda: None)
+    monkeypatch.setattr(helper.sys, "stdin", io.StringIO("this is not a rule\n"))
+
+    result = helper.main(
+        [
+            "save-routing",
+            "--content-stdin",
+            "--routing-file",
+            str(routing_file),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert payload["ok"] is False
+    assert "malformed rule" in payload["error"]
+    assert routing_file.read_text(encoding="utf-8") == original

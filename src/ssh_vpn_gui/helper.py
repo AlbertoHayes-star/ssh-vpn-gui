@@ -11,7 +11,7 @@ from .dns_proxy import diagnose_dns_proxy, start_dns_proxy, stop_dns_proxy
 from .geoip import update_geoip
 from .geosite import update_geosite
 from .paths import SYSTEM_ROUTING_FILE
-from .routing_config import parse_routing_file
+from .routing_config import parse_routing_file, parse_routing_text
 from .routing_engine import RoutingEngine
 from .ssh_tunnel import (
     cleanup_remote,
@@ -41,9 +41,17 @@ def main(argv: list[str] | None = None) -> int:
         password = _read_password(args)
         runner = CommandRunner(dry_run=args.dry_run)
         routing_file = Path(args.routing_file)
-        config = parse_routing_file(routing_file)
+        config = None if args.command == "save-routing" else parse_routing_file(routing_file)
 
-        if args.command == "connect":
+        if args.command == "save-routing":
+            content = _read_content(args)
+            parse_routing_text(content)
+            if args.dry_run:
+                messages.append(f"write validated routing rules to {routing_file}")
+            else:
+                _save_routing_file(routing_file, content)
+                messages.append("routing rules saved")
+        elif args.command == "connect":
             _require_server(args.server)
             _require_password(password)
             messages.extend(_connect(args, config, routing_file, runner, password))
@@ -140,6 +148,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "routing-off",
             "cascade-on",
             "cascade-off",
+            "save-routing",
             "update-geo",
             "diagnose",
         ],
@@ -148,6 +157,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--login", default="root", help="Remote SSH login")
     parser.add_argument("--password", help="Remote SSH password. Prefer --password-stdin.")
     parser.add_argument("--password-stdin", action="store_true", help="Read remote root password from stdin")
+    parser.add_argument("--content-stdin", action="store_true", help="Read routing configuration content from stdin")
     parser.add_argument("--routing-file", default=str(SYSTEM_ROUTING_FILE))
     parser.add_argument("--no-routing", action="store_true", help="Connect SSH TUN without starting routing rules")
     parser.add_argument("--ovpn-file", help="Path to a .ovpn file to run as a cascaded VPN on the remote server")
@@ -160,6 +170,23 @@ def _read_password(args: argparse.Namespace) -> str | None:
     if args.password_stdin:
         return sys.stdin.read().rstrip("\n")
     return args.password
+
+
+def _read_content(args: argparse.Namespace) -> str:
+    if not args.content_stdin:
+        raise ValueError("--content-stdin is required")
+    content = sys.stdin.read()
+    if not content.strip():
+        raise ValueError("routing configuration cannot be empty")
+    return content
+
+
+def _save_routing_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.chmod(0o644)
+    temporary.replace(path)
 
 
 def _require_server(server: str | None) -> None:

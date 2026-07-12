@@ -264,6 +264,9 @@ def _remote_ovpn_stop_snippet() -> str:
     return f"""
 while ip rule del from {TUN_CIDR} table {OVPN_TABLE} priority {OVPN_TABLE} 2>/dev/null; do :; done
 ip route flush table {OVPN_TABLE} 2>/dev/null || true
+if command -v conntrack >/dev/null 2>&1; then
+  conntrack -D -s {TUN_CIDR} >/dev/null 2>&1 || true
+fi
 if [ -f {OVPN_PID_PATH} ]; then
   ovpn_pid=$(cat {OVPN_PID_PATH} 2>/dev/null || true)
   if [ -n "$ovpn_pid" ] && [ -r "/proc/$ovpn_pid/cmdline" ] && \
@@ -291,17 +294,17 @@ echo SSH_VPN_OVPN_STOPPED
 def remote_ovpn_bootstrap_script(ovpn_b64: str) -> str:
     return f"""
 set -eu
-if ! command -v openvpn >/dev/null 2>&1; then
+if ! command -v openvpn >/dev/null 2>&1 || ! command -v conntrack >/dev/null 2>&1; then
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y openvpn
+    apt-get install -y openvpn conntrack
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y openvpn
+    dnf install -y openvpn conntrack-tools
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y openvpn
+    yum install -y openvpn conntrack-tools
   else
-    echo 'no supported package manager found to install openvpn' >&2
+    echo 'no supported package manager found to install openvpn and conntrack tools' >&2
     exit 1
   fi
 fi

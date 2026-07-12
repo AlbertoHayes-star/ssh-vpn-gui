@@ -107,6 +107,10 @@ After installing the Debian package, edit the system configuration:
 sudoedit /etc/ssh-vpn-gui/routing.cfg
 ```
 
+You can also click **Edit Routing Rules** next to **Update Routing Data**. The
+built-in editor validates rules before saving and applies them immediately
+when rule-based routing is active.
+
 Supported forms include:
 
 ```text
@@ -166,10 +170,12 @@ Both routing checkboxes are live while connected:
   remote client with that file.
 
 Changing the cascade changes the public exit IP. Existing TCP, browser and
-WebSocket sessions can disconnect and must reconnect; new connections should
-work immediately. The application checks this after enabling the cascade and
-shows the new public IP. If the check fails, it stops OpenVPN automatically
-and restores the SSH-only route.
+WebSocket sessions must reconnect. The application clears stale remote
+connection-tracking entries during the switch so browsers establish fresh
+sessions immediately instead of reusing the old OpenVPN NAT mapping. It also
+checks connectivity after enabling the cascade and shows the new public IP.
+If the check fails, it stops OpenVPN automatically and restores the SSH-only
+route.
 
 Notes:
 
