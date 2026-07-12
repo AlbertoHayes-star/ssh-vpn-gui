@@ -2,7 +2,7 @@
 set -eu
 
 APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/1024x1024/apps"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
 SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 ICON_FILE="$SOURCE_DIR/assets/dev.cursor.SshVpnGui.png"
 TARGET_FILE="$APP_DIR/dev.cursor.SshVpnGui.desktop"
