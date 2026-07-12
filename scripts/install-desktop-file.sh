@@ -2,9 +2,9 @@
 set -eu
 
 APP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
+ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/1024x1024/apps"
 SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-ICON_FILE="$SOURCE_DIR/assets/dev.cursor.SshVpnGui.svg"
+ICON_FILE="$SOURCE_DIR/assets/dev.cursor.SshVpnGui.png"
 TARGET_FILE="$APP_DIR/dev.cursor.SshVpnGui.desktop"
 
 mkdir -p "$APP_DIR"
@@ -21,9 +21,9 @@ Categories=Network;GTK;
 StartupNotify=true
 StartupWMClass=dev.cursor.SshVpnGui
 EOF
-cp "$ICON_FILE" "$ICON_DIR/dev.cursor.SshVpnGui.svg"
+cp "$ICON_FILE" "$ICON_DIR/dev.cursor.SshVpnGui.png"
 chmod 0644 "$TARGET_FILE"
-chmod 0644 "$ICON_DIR/dev.cursor.SshVpnGui.svg"
+chmod 0644 "$ICON_DIR/dev.cursor.SshVpnGui.png"
 rm -f "$APP_DIR/ssh-vpn-gui.desktop"
 
 if command -v desktop-file-validate >/dev/null 2>&1; then
