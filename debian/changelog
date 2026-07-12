@@ -1,0 +1,23 @@
+ssh-vpn-gui (0.1.7) unstable; urgency=medium
+
+  * Bootstrap SSH PermitTunnel and IPv4 forwarding on new remote servers.
+  * Report the underlying SSH failure instead of a closed-stdin error.
+  * Document GitHub release installation, server requirements, routing,
+    upgrades, removal, diagnostics, development, and security considerations.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 20:34:00 +0300
+
+ssh-vpn-gui (0.1.6) unstable; urgency=medium
+
+  * Fix no connectivity to raw IP addresses (ping/TCP) over the tunnel.
+    Marked traffic left tun3 with the LAN source address and was dropped by
+    the remote masquerade; add a local SNAT to the tunnel address on tun3
+    egress so fwmark-routed traffic is masqueraded correctly.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Thu, 25 Jun 2026 09:58:00 +0300
+
+ssh-vpn-gui (0.1.5) unstable; urgency=medium
+
+  * Preserve tun3 connected routes when enabling split routing.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Thu, 25 Jun 2026 08:26:00 +0300

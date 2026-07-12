@@ -1,0 +1,4 @@
+routing.cfg etc/ssh-vpn-gui/
+ssh-vpn-gui.desktop usr/share/applications/
+assets/dev.cursor.SshVpnGui.svg usr/share/icons/hicolor/scalable/apps/
+debian/com.ssh-vpn-gui.helper.policy usr/share/polkit-1/actions/

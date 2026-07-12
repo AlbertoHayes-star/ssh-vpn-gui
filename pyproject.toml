@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssh-vpn-gui"
+version = "0.1.7"
+description = "Ubuntu GTK GUI for SSH -w TUN VPN routing with local DNS and nftables"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+  "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "maxminddb>=2.6",
+  "pexpect>=4.9",
+  "PyGObject>=3.42",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+ssh-vpn-gui = "ssh_vpn_gui.app:main"
+ssh-vpn-helper = "ssh_vpn_gui.helper:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

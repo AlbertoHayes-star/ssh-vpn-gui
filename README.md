@@ -1,0 +1,211 @@
+# SSH VPN GUI
+
+SSH VPN GUI is an Ubuntu desktop application that creates an OpenSSH TUN
+tunnel (`ssh -w`) to a remote Linux server. Traffic can be sent through the
+tunnel selectively using `routing.cfg`, nftables and a local DNS-over-TLS
+classifier.
+
+## Features
+
+- GTK 4/Libadwaita interface.
+- Password-based root login to the remote server.
+- Automatic remote-server bootstrap before the tunnel starts.
+- Full-tunnel and rule-based routing modes.
+- GeoIP and Geosite routing data updates from the GUI.
+- Automatic rollback when a connection attempt fails.
+
+## Requirements
+
+### Local computer
+
+- Ubuntu 22.04 or newer.
+- A graphical desktop session.
+- Network access to the remote server's SSH port.
+
+The Debian package installs all local runtime dependencies automatically.
+
+### Remote server
+
+- A Linux VPS with OpenSSH server running.
+- Working root SSH login and password.
+- Kernel/provider support for `/dev/net/tun`.
+
+On the first connection the application uses the supplied root credentials to
+load the TUN module when available, enable IPv4 forwarding, configure
+`PermitTunnel point-to-point`, reload SSH safely, and configure tunnel
+addresses and NAT. Users do not need to prepare `PermitTunnel` manually.
+
+The application cannot enable TUN when the VPS provider or container host has
+disabled that capability. In that case, enable TUN in the provider control
+panel first.
+
+## Install from GitHub Releases
+
+1. Open this repository's **Releases** page.
+2. Download the latest `ssh-vpn-gui_<version>_all.deb` asset.
+3. Install it from the download directory:
+
+```bash
+sudo apt install ./ssh-vpn-gui_*_all.deb
+```
+
+Launch **SSH VPN GUI** from the application menu or run:
+
+```bash
+ssh-vpn-gui
+```
+
+Enter the remote server IP address, `root` as the login, and its SSH password.
+Click **Update Routing Data** once before using GeoIP or Geosite rules, then
+click **Connect**.
+
+To update, download the newer `.deb` and run the same `apt install` command.
+Your saved credentials and `/etc/ssh-vpn-gui/routing.cfg` are preserved.
+
+To uninstall:
+
+```bash
+sudo apt remove ssh-vpn-gui
+```
+
+Use `sudo apt purge ssh-vpn-gui` instead if you also want apt to remove package
+configuration files.
+
+## Build the Debian Package
+
+Clone or download the repository, open a terminal in its root directory, and
+install the build dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential debhelper devscripts dh-python \
+  pybuild-plugin-pyproject python3-all python3-pytest python3-setuptools \
+  python3-wheel
+```
+
+Build and install:
+
+```bash
+dpkg-buildpackage -us -uc
+sudo apt install ./../ssh-vpn-gui_*_all.deb
+```
+
+The package installs:
+
+- GUI launcher: `/usr/bin/ssh-vpn-gui`
+- Privileged helper: `/usr/bin/ssh-vpn-helper`
+- Routing configuration: `/etc/ssh-vpn-gui/routing.cfg`
+- Desktop entry, icon and Polkit policy under `/usr/share`
+
+## Routing Rules
+
+After installing the Debian package, edit the system configuration:
+
+```bash
+sudoedit /etc/ssh-vpn-gui/routing.cfg
+```
+
+Supported forms include:
+
+```text
+default: proxy
+domain(domain:mail.qq.com)->direct
+domain(regexp: '(^|[.])yandex[.]com$')->direct
+domain(geosite:ru)->direct
+ip(203.0.113.0/24)->direct
+ip(geoip:private, geoip:ru)->direct
+```
+
+`proxy` sends matching traffic through `tun3`; `direct` uses the normal local
+network. Domain and Geosite rules require applications to use normal system
+DNS. After changing the file, disconnect and reconnect.
+
+**Update Routing Data** downloads:
+
+- IP66 GeoIP MMDB to `/var/lib/ssh-vpn-gui/ip66.mmdb`
+- v2fly domain-list-community data to `/var/lib/ssh-vpn-gui/geosite`
+
+## Local Privilege Prompt
+
+The GUI uses Polkit (`pkexec`) because local TUN, routing and firewall changes
+require root privileges. This local administrator prompt is separate from the
+remote server password entered in the application.
+
+For a single-user machine, an optional repository script can allow the current
+user to run only `/usr/bin/ssh-vpn-helper` through passwordless sudo:
+
+```bash
+./scripts/install-sudoers-rule.sh
+```
+
+The GUI detects that rule and uses `sudo -n`. Remove it with:
+
+```bash
+./scripts/uninstall-sudoers-rule.sh
+```
+
+These scripts are available in the source repository, not in the Debian
+package.
+
+## Troubleshooting
+
+Run the built-in **Diagnose** action while disconnected or connected. For
+terminal diagnostics:
+
+```bash
+sudo ssh-vpn-helper diagnose --server SERVER_IP
+```
+
+Common failures:
+
+- **Authentication failed:** verify the server IP, root login and password.
+- **Connection timed out:** verify the SSH port is reachable.
+- **Tunnel device open failed:** confirm that the VPS provider allows TUN.
+- **Routing data missing:** click **Update Routing Data**.
+
+Inspect generated commands without making changes:
+
+```bash
+printf '%s\n' 'test' |
+  sudo ssh-vpn-helper connect --dry-run --server 203.0.113.10 \
+  --password-stdin
+```
+
+## Development
+
+Install local system dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-venv \
+  openssh-client nftables policykit-1
+```
+
+Create an environment and run the tests:
+
+```bash
+python3 -m venv --system-site-packages .venv
+. .venv/bin/activate
+pip install -e '.[test]'
+pytest
+```
+
+PyGObject is normally provided by Ubuntu's `python3-gi` package rather than
+installed from PyPI.
+
+## Security
+
+- The remote server is modified using root privileges. Test on a disposable
+  server before using the application in production.
+- Server, login and password are stored in
+  `~/.config/ssh-vpn-gui/config.json` with mode `0600`; the password is not
+  encrypted at rest.
+- The first SSH host key is accepted automatically and stored in
+  `/var/lib/ssh-vpn-gui/known_hosts`. A changed key is rejected.
+- DNS uses TLS to `1.1.1.1:853`, with `9.9.9.9:853` as fallback.
+- IPv6 traffic is not routed through the tunnel.
+
+## License
+
+SSH VPN GUI is licensed under the
+[GNU General Public License version 3](LICENSE).

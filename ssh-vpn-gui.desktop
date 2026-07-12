@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SSH VPN GUI
+Comment=Manage SSH TUN VPN routing
+Exec=ssh-vpn-gui
+Icon=dev.cursor.SshVpnGui
+Terminal=false
+Categories=Network;GTK;
+StartupNotify=true
+StartupWMClass=dev.cursor.SshVpnGui

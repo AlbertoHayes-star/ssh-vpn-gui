@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+from .dns_proxy import diagnose_dns_proxy, start_dns_proxy, stop_dns_proxy
+from .geoip import update_geoip
+from .geosite import update_geosite
+from .paths import SYSTEM_ROUTING_FILE
+from .routing_config import parse_routing_file
+from .routing_engine import RoutingEngine
+from .ssh_tunnel import cleanup_remote, start_tunnel, stop_tunnel
+from .system import CommandRunner, cleanup_legacy_singbox, cleanup_local_tun, preserve_server_route, require_root, setup_full_tunnel_routes, setup_local_tun
+
+PUBLIC_IP_URLS = (
+    "https://ifconfig.me/ip",
+    "https://api.ipify.org",
+    "https://ifconfig.co/ip",
+)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    messages: list[str] = []
+    try:
+        if not args.dry_run:
+            require_root()
+
+        password = _read_password(args)
+        runner = CommandRunner(dry_run=args.dry_run)
+        routing_file = Path(args.routing_file)
+        config = parse_routing_file(routing_file)
+
+        if args.command == "connect":
+            _require_server(args.server)
+            _require_password(password)
+            messages.extend(_connect(args, config, routing_file, runner, password))
+        elif args.command == "disconnect":
+            messages.extend(stop_dns_proxy(dry_run=args.dry_run))
+            messages.extend(stop_tunnel(dry_run=args.dry_run))
+            if args.server:
+                RoutingEngine(config=config, server=args.server).stop(runner)
+            cleanup_local_tun(runner, args.server)
+            messages.extend(runner.commands)
+            if args.server and password:
+                messages.extend(cleanup_remote(args.server, args.login, password, dry_run=args.dry_run))
+        elif args.command == "routing-on":
+            _require_server(args.server)
+            engine = RoutingEngine(config=config, server=args.server)
+            engine.start(runner)
+            engine.add_static_ip_rules(runner)
+            messages.extend(start_dns_proxy(routing_file, dry_run=args.dry_run))
+            messages.extend(runner.commands)
+        elif args.command == "routing-off":
+            messages.extend(stop_dns_proxy(dry_run=args.dry_run))
+            if args.server:
+                RoutingEngine(config=config, server=args.server).stop(runner)
+                preserve_server_route(runner, args.server)
+                setup_full_tunnel_routes(runner, cleanup_first=False)
+            messages.extend(runner.commands)
+        elif args.command == "update-geo":
+            messages.extend(update_geoip(dry_run=args.dry_run))
+            messages.extend(update_geosite(dry_run=args.dry_run))
+        elif args.command == "diagnose":
+            messages.extend(_diagnose(args.server))
+            messages.extend(diagnose_dns_proxy())
+        else:
+            raise ValueError(f"Unsupported command {args.command!r}")
+
+        _print_result(ok=True, messages=messages)
+        return 0
+    except Exception as exc:
+        _print_result(ok=False, error=str(exc), messages=messages)
+        return 1
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="ssh-vpn-helper")
+    parser.add_argument(
+        "command",
+        choices=["connect", "disconnect", "routing-on", "routing-off", "update-geo", "diagnose"],
+    )
+    parser.add_argument("--server", help="Remote server IP address")
+    parser.add_argument("--login", default="root", help="Remote SSH login")
+    parser.add_argument("--password", help="Remote SSH password. Prefer --password-stdin.")
+    parser.add_argument("--password-stdin", action="store_true", help="Read remote root password from stdin")
+    parser.add_argument("--routing-file", default=str(SYSTEM_ROUTING_FILE))
+    parser.add_argument("--no-routing", action="store_true", help="Connect SSH TUN without starting routing rules")
+    parser.add_argument("--skip-health-check", action="store_true", help="Skip rollback health check after connect")
+    parser.add_argument("--dry-run", action="store_true", help="Print commands without changing the system")
+    return parser
+
+
+def _read_password(args: argparse.Namespace) -> str | None:
+    if args.password_stdin:
+        return sys.stdin.read().rstrip("\n")
+    return args.password
+
+
+def _require_server(server: str | None) -> None:
+    if not server:
+        raise ValueError("--server is required")
+
+
+def _require_password(password: str | None) -> None:
+    if not password:
+        raise ValueError("root password is required")
+
+
+def _print_result(*, ok: bool, messages: list[str], error: str | None = None) -> None:
+    payload = {"ok": ok, "messages": messages}
+    if error:
+        payload["error"] = error
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def _connect(args: argparse.Namespace, config, routing_file: Path, runner: CommandRunner, password: str) -> list[str]:
+    messages: list[str] = []
+    engine = RoutingEngine(config=config, server=args.server)
+    try:
+        _cleanup_before_connect(args, config, runner)
+        messages.extend(start_tunnel(args.server, args.login, password, dry_run=args.dry_run))
+        setup_local_tun(runner)
+        preserve_server_route(runner, args.server)
+        if not args.no_routing:
+            engine.start(runner)
+            engine.add_static_ip_rules(runner)
+            messages.extend(start_dns_proxy(routing_file, dry_run=args.dry_run))
+        else:
+            engine.stop(runner)
+            setup_full_tunnel_routes(runner)
+        messages.extend(runner.commands)
+        if not args.dry_run and not args.skip_health_check:
+            messages.extend(_health_check())
+        return messages
+    except Exception as exc:
+        rollback_messages = _rollback_after_failed_connect(args, config)
+        raise RuntimeError(f"connect failed, rolled back: {exc}; rollback: {' | '.join(rollback_messages)}") from exc
+
+
+def _cleanup_before_connect(args: argparse.Namespace, config, runner: CommandRunner) -> None:
+    stop_dns_proxy(dry_run=runner.dry_run)
+    stop_tunnel(dry_run=runner.dry_run)
+    if args.server:
+        RoutingEngine(config=config, server=args.server).stop(runner)
+    cleanup_local_tun(runner, args.server)
+    cleanup_legacy_singbox(runner)
+
+
+def _rollback_after_failed_connect(args: argparse.Namespace, config) -> list[str]:
+    runner = CommandRunner(dry_run=False)
+    messages: list[str] = []
+    try:
+        messages.extend(stop_dns_proxy(dry_run=False))
+        messages.extend(stop_tunnel(dry_run=False))
+        if args.server:
+            RoutingEngine(config=config, server=args.server).stop(runner)
+        cleanup_local_tun(runner, args.server)
+        messages.extend(runner.commands)
+    except Exception as exc:
+        messages.append(f"rollback error: {exc}")
+    return messages
+
+
+def _health_check() -> list[str]:
+    messages: list[str] = []
+    current_ip = _curl_public_ip()
+    if not current_ip:
+        messages.append("public IP health check unavailable; tunnel left running")
+        return messages
+    messages.append(f"public IP: {current_ip}")
+    return messages
+
+
+def _curl_public_ip() -> str | None:
+    for url in PUBLIC_IP_URLS:
+        try:
+            completed = subprocess.run(
+                ["curl", "-4", "-sS", "--max-time", "5", url],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=7,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        if completed.returncode == 0:
+            value = completed.stdout.strip()
+            if value:
+                return value
+    return None
+
+
+def _diagnose(server: str | None) -> list[str]:
+    commands = [
+        ["ip", "addr", "show", "tun3"],
+        ["ip", "rule", "show"],
+        ["ip", "route", "show", "table", "2023"],
+        ["ip", "route", "get", "34.160.111.145"],
+        ["ip", "route", "get", "34.160.111.145", "mark", "2023"],
+        ["nft", "list", "table", "inet", "ssh_vpn_gui"],
+    ]
+    if server:
+        commands.append(["ip", "route", "get", server])
+    messages: list[str] = []
+    for command in commands:
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+        messages.append("$ " + " ".join(command))
+        messages.append((completed.stdout or completed.stderr).strip())
+    return messages
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
