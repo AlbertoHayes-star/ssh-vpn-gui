@@ -1,3 +1,24 @@
+ssh-vpn-gui (0.2.11) unstable; urgency=medium
+
+  * Change the window title to SSH VPN CONNECTED while connected.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 23:05:00 +0300
+
+ssh-vpn-gui (0.2.10) unstable; urgency=medium
+
+  * Route yplaces.com directly as a Russian service not currently covered by
+    domain-list-community.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 23:55:00 +0300
+
+ssh-vpn-gui (0.2.9) unstable; urgency=medium
+
+  * Resolve nested include directives in v2fly domain-list-community data.
+  * Expand geosite:ru through the maintained category-ru hierarchy, covering
+    VK infrastructure such as vk-portal.net and other Russian services.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Sun, 12 Jul 2026 23:30:00 +0300
+
 ssh-vpn-gui (0.2.8) unstable; urgency=medium
 
   * Install conntrack tools with the remote OpenVPN client when missing.

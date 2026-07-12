@@ -40,14 +40,27 @@ class GeositeStore:
         return False
 
     def load(self, tag: str) -> list[tuple[str, str]]:
+        return self._load(tag.lower(), set())
+
+    def _load(self, tag: str, loading: set[str]) -> list[tuple[str, str]]:
         tag = tag.lower()
         if tag in self.cache:
             return self.cache[tag]
+        if tag in loading:
+            return []
 
+        loading.add(tag)
         path = self.root / "data" / tag
         entries = _builtin_entries(tag)
+        includes = ["category-ru"] if tag == "ru" else []
         if path.exists():
-            entries.extend(_parse_geosite_file(path))
+            parsed_entries, parsed_includes = _parse_geosite_file(path)
+            entries.extend(parsed_entries)
+            includes.extend(parsed_includes)
+        for included_tag in includes:
+            entries.extend(self._load(included_tag, loading))
+        loading.remove(tag)
+        entries = list(dict.fromkeys(entries))
         self.cache[tag] = entries
         return entries
 
@@ -87,11 +100,17 @@ def _download_file(url: str, destination: Path) -> None:
         raise RuntimeError(f"Download failed: {url}: {exc}") from exc
 
 
-def _parse_geosite_file(path: Path) -> list[tuple[str, str]]:
+def _parse_geosite_file(path: Path) -> tuple[list[tuple[str, str]], list[str]]:
     entries: list[tuple[str, str]] = []
+    includes: list[str] = []
     for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = raw_line.split("#", 1)[0].strip().lower()
-        if not line or line.startswith("include:"):
+        if not line:
+            continue
+        if line.startswith("include:"):
+            included_tag = line.split(":", 1)[1].split("@", 1)[0].strip()
+            if included_tag:
+                includes.append(included_tag)
             continue
         if ":" in line:
             kind, value = line.split(":", 1)
@@ -100,7 +119,7 @@ def _parse_geosite_file(path: Path) -> list[tuple[str, str]]:
         value = value.split("@", 1)[0].strip()
         if value:
             entries.append((kind, value))
-    return entries
+    return entries, includes
 
 
 def _builtin_entries(tag: str) -> list[tuple[str, str]]:

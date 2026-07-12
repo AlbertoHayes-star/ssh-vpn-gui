@@ -126,6 +126,11 @@ ip(geoip:private, geoip:ru)->direct
 network. Domain and Geosite rules require applications to use normal system
 DNS. After changing the file, disconnect and reconnect.
 
+`geosite:ru` expands the maintained v2fly `category-ru` hierarchy, including
+its nested lists for VK (`vk-portal.net`, VK media CDNs), Mail.ru, OK, Yandex,
+Russian banks, telecom operators, government and other domestic services.
+Click **Update Routing Data** periodically to receive list updates.
+
 **Update Routing Data** downloads:
 
 - IP66 GeoIP MMDB to `/var/lib/ssh-vpn-gui/ip66.mmdb`

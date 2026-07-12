@@ -420,10 +420,12 @@ class SshVpnWindow(Adw.ApplicationWindow):
         self.connect_button.set_sensitive(available and not self.connected)
         self.disconnect_button.set_sensitive(available and self.connected)
         if self.connected:
+            self.set_title("SSH VPN CONNECTED")
             self.connect_button.set_label("Connected")
             self.connect_button.remove_css_class("suggested-action")
             self.disconnect_button.add_css_class("destructive-action")
         else:
+            self.set_title("SSH VPN")
             self.connect_button.set_label("Connect")
             self.connect_button.add_css_class("suggested-action")
             self.disconnect_button.remove_css_class("destructive-action")
