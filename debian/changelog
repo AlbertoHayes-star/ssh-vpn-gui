@@ -1,3 +1,10 @@
+ssh-vpn-gui (0.2.12) unstable; urgency=medium
+
+  * Route DNS-over-TLS queries through the SSH tunnel for domains classified
+    as proxy while keeping direct-domain DNS on the local connection.
+
+ -- SSH VPN GUI Maintainers <maintainers@example.invalid>  Mon, 13 Jul 2026 08:05:00 +0300
+
 ssh-vpn-gui (0.2.11) unstable; urgency=medium
 
   * Change the window title to SSH VPN CONNECTED while connected.

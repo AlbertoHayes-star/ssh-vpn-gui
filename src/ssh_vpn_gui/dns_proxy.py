@@ -16,7 +16,7 @@ from .geoip import GeoIpStore
 from .geosite import GeositeStore
 from .routing_config import RoutingConfig, parse_routing_file
 from .routing_engine import DNS_PORT, add_resolved_ips
-from .system import CommandRunner, STATE_DIR
+from .system import CommandRunner, PROXY_MARK, STATE_DIR
 
 DNS_PID = STATE_DIR / "dns-proxy.pid"
 DNS_LOG = STATE_DIR / "dns-proxy.log"
@@ -144,7 +144,7 @@ class DnsClassifier:
     def _resolve_and_classify(self, packet: bytes) -> bytes:
         domain = _query_domain(packet)
         action = self._classify_domain(domain) if domain else self.config.default
-        response = _dot_query(packet)
+        response = _dot_query(packet, action)
         addresses, ttl = _answer_addresses(response)
         direct_addresses: list[str] = []
         proxy_addresses: list[str] = []
@@ -194,12 +194,12 @@ class DnsClassifier:
         self.running = False
 
 
-def _dot_query(packet: bytes) -> bytes:
+def _dot_query(packet: bytes, action: str) -> bytes:
     last_error: Exception | None = None
     for host, port in UPSTREAMS:
         try:
             context = ssl.create_default_context()
-            with socket.create_connection((host, port), timeout=8) as raw:
+            with _connect_dot_socket(host, port, action) as raw:
                 server_name = "cloudflare-dns.com" if host == "1.1.1.1" else "dns.quad9.net"
                 with context.wrap_socket(raw, server_hostname=server_name) as tls:
                     tls.settimeout(8)
@@ -209,6 +209,19 @@ def _dot_query(packet: bytes) -> bytes:
         except Exception as exc:
             last_error = exc
     raise RuntimeError(f"DoT query failed: {last_error}")
+
+
+def _connect_dot_socket(host: str, port: int, action: str) -> socket.socket:
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        raw.settimeout(8)
+        if action == "proxy":
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_MARK, int(PROXY_MARK))
+        raw.connect((host, port))
+        return raw
+    except Exception:
+        raw.close()
+        raise
 
 
 def _query_domain(packet: bytes) -> str | None:

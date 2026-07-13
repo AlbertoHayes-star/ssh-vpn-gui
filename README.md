@@ -126,6 +126,11 @@ ip(geoip:private, geoip:ru)->direct
 network. Domain and Geosite rules require applications to use normal system
 DNS. After changing the file, disconnect and reconnect.
 
+DNS is sent over TLS to Cloudflare or Quad9 using the same domain action:
+queries classified as `proxy` go through `tun3`, while `direct` queries use
+the local connection. IP/GeoIP rules are evaluated after the DNS response, so
+the DNS path itself is selected from domain/Geosite rules and `default`.
+
 `geosite:ru` expands the maintained v2fly `category-ru` hierarchy, including
 its nested lists for VK (`vk-portal.net`, VK media CDNs), Mail.ru, OK, Yandex,
 Russian banks, telecom operators, government and other domestic services.
